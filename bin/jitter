@@ -1,0 +1,207 @@
+#!/usr/bin/env ruby -wKU
+
+require "date"
+
+require "rubygems"
+require "amalgalite"
+require "rest_client"
+require "json"
+
+db = Amalgalite::Database.new("#{File.expand_path("~")}/.jitter.sqlite")
+db.busy_handler(Amalgalite::BusyTimeout.new(600, 100))
+class << db
+  M = {:all => :execute, :row => :first_row_from, :value => :first_value_from}
+  def read_sql(method, sql, *params, &row_processor)
+    transaction("IMMEDIATE") { send(M[method], sql, *params, &row_processor) }
+  end
+  def write_sql(sql, *params)
+    transaction("EXCLUSIVE") do execute(sql, *params) end
+  end
+end
+
+begin
+  case db.pragma(:schema_version).first.first
+  when 0
+    db.transaction("EXCLUSIVE") do
+      db.execute_batch(<<-END_SCHEMA_SQL)
+      CREATE TABLE settings (
+        user        TEXT    NOT NULL
+                    CHECK(length(trim(user)) > 0),
+        password    TEXT    NOT NULL
+                    CHECK(length(trim(password)) > 0),
+        tweet_count INTEGER NOT NULL DEFAULT 5
+                    CHECK(tweet_count > 0),
+        wrap_chars  INTEGER NOT NULL DEFAULT 40
+                    CHECK(wrap_chars > 0)
+      );
+      CREATE TABLE tweets (
+        id          INTEGER NOT NULL PRIMARY KEY
+                    CHECK(id > 0),
+        screen_name TEXT    NOT NULL
+                    CHECK(length(trim(screen_name)) > 0),
+        body        TEXT    NOT NULL
+                    CHECK(length(body) BETWEEN 1 AND 140),
+        posted_at   TEXT    NOT NULL
+                    CHECK(datetime(posted_at) IS NOT NULL)
+      );
+      END_SCHEMA_SQL
+    end
+    ARGV.unshift("--settings")
+  end
+rescue Amalgalite::SQLite3::Error
+  abort "Unable to migrate database."
+end
+
+if ARGV.delete("--settings")
+  info, old_settings = nil, nil
+  begin
+    db.transaction("IMMEDIATE") do
+      info         = db.pragma("table_info(settings)")
+      old_settings = db.first_row_from(<<-END_FIND_SETTINGS_SQL)
+      SELECT user, password, tweet_count, wrap_chars FROM settings LIMIT 1
+      END_FIND_SETTINGS_SQL
+    end
+  rescue Amalgalite::SQLite3::Error
+    abort "Unable to read settings."
+  end
+  puts "Settings:"
+  new_settings = Array.new
+  info.each do |column|
+    current      =  (!old_settings.empty? && old_settings[column[:name]]) ||
+                    column[:dflt_value]
+    print "  #{column[:name]} [#{current}]?  "
+    setting      =  gets.to_s.strip
+    converter    =  column[:type] == "INTEGER" ? :Integer : :String 
+    new_settings << send(converter, setting.empty? ? current : setting)
+  end
+  puts
+  begin
+    db.write_sql(<<-END_UDPATE_SETTINGS_SQL, *new_settings)
+    INSERT OR REPLACE INTO
+      settings(ROWID, user, password, tweet_count, wrap_chars)
+      VALUES(      1,    ?,        ?,           ?,          ?)
+    END_UDPATE_SETTINGS_SQL
+  rescue Amalgalite::SQLite3::Error
+    abort "Unable to update settings."
+  end
+end
+begin
+  user, password, limit, chars = db.read_sql(:row, <<-END_FIND_SETTINGS_SQL)
+  SELECT user, password, tweet_count, wrap_chars FROM settings LIMIT 1
+  END_FIND_SETTINGS_SQL
+rescue Amalgalite::SQLite3::Error
+  abort "Unable to read settings."
+end
+wrap       = lambda { |str|
+  str.gsub!(/(.{1,#{chars}}|\S{#{chars + 1},})(?: +|$\n?)/, "\\1\n")
+}
+show_tweet = lambda do |tweet, *i|
+  by_line = wrap["#{i.first}#{tweet[:screen_name]} at #{tweet[:posted_at]}"]
+  puts by_line
+  puts "-" * by_line[/\A.+/].length
+  puts wrap[tweet[:body]]
+end
+
+server = RestClient::Resource.new( "http://twitter.com/statuses",
+                                   :user     => user,
+                                   :password => password )
+if new_tweet = ARGV.shift
+  update = {:status => new_tweet.dup}
+  if update[:status] =~ /\A@(\w+)\b/
+    name  = $1
+    count = 0
+    begin
+      matches = db.read_sql(:all, <<-END_FIND_TWEETS_SQL, "#{name}%", limit)
+      SELECT   id, screen_name, body, posted_at
+      FROM     tweets
+      WHERE    screen_name LIKE ?
+      ORDER BY posted_at DESC
+      LIMIT    ?
+      END_FIND_TWEETS_SQL
+    rescue Amalgalite::SQLite3::Error
+      # leave matches empty
+    end
+    if matches.empty?
+      print "@#{name} doesn't match any tweets.  Is it correct?  "
+      unless gets.to_s.strip.downcase[0] == ?y
+        abort "Please correct your tweet."
+      end
+    else
+      matches.each_with_index do |tweet, i|
+        show_tweet[tweet, "#{i + 1}:  "]
+        puts
+      end
+      print "Is this in reply to one of the above?  "
+      n = gets.to_s.strip
+      if n =~ /\A\d*[1-9]\z/
+        if match = matches[n.to_i - 1]
+          update[:in_reply_to_status_id] = match[:id]
+          update[:status].sub!(/\A@\w+\b/, "@#{match[:screen_name]}")
+        else
+          abort "Unknown tweet."
+        end
+      end
+    end
+  end
+  begin
+    server["update.json"].post(update)
+  rescue Errno::ECONNREFUSED, RestClient::Exception
+    abort "Tweet could not be sent."
+  end
+else
+  begin
+    last_tweet_id = db.read_sql(:value, <<-END_FIND_TWEET_SQL)
+    SELECT id FROM tweets ORDER BY posted_at DESC LIMIT 1
+    END_FIND_TWEET_SQL
+  rescue Amalgalite::SQLite3::Error
+    # leave last_tweet_id nil
+  end
+  params   = last_tweet_id ? "since_id=#{last_tweet_id}" : "count=200"
+  begin
+    json   = server["friends_timeline.json?#{params}"].get
+  rescue Errno::ECONNREFUSED, RestClient::Exception
+    json   = nil
+  end
+  begin
+    tweets = JSON.parse(json.to_s)
+  rescue JSON::ParserError
+    tweets = Array.new
+  end
+  tweets.each do |tweet|
+    id          = tweet["id"].to_i
+    screen_name = tweet["user"] && tweet["user"]["screen_name"] or next
+    body        = tweet["text"]
+    begin
+      date_time = DateTime.strptime( tweet["created_at"],
+                                     "%a %b %d %H:%M:%S %Z %Y" )
+    rescue ArgumentError
+      next
+    end
+    time        = Time.utc( date_time.year, date_time.mon, date_time.day,
+                            date_time.hour, date_time.min, date_time.sec )
+    posted_at   = time.localtime.strftime("%Y-%m-%d %H:%M:%S")
+    begin
+      db.write_sql(<<-END_INSERT_TWEET_SQL, id, screen_name, body, posted_at)
+      INSERT INTO tweets(id, screen_name, body, posted_at) VALUES(?, ?, ?, ?)
+      END_INSERT_TWEET_SQL
+    rescue Amalgalite::SQLite3::Error
+      next
+    end
+  end
+  begin
+    count = 0
+    db.transaction("IMMEDIATE") do
+      db.execute(<<-END_FIND_TWEETS_SQL, limit) do |tweet|
+      SELECT   screen_name, body, posted_at
+      FROM     tweets
+      ORDER BY posted_at DESC
+      LIMIT    ?
+      END_FIND_TWEETS_SQL
+        show_tweet[tweet]
+        puts unless (count += 1) == limit
+      end
+    end
+  rescue Amalgalite::SQLite3::Error
+    abort "Unable to read tweets."
+  end
+end

@@ -1,0 +1,54 @@
+Jitter is JEG2 on Twitter
+=========================
+
+This is intended to be the simplest Twitter client that could possibly work, for me that is.  Thus if you think and work like me, this may help you.  If you don't, well, "These aren't the droids you are looking for."
+
+Setup
+-----
+
+To setup the client, just run it:
+
+    $ bin/jitter
+
+You will be asked some simple questions to configure the client.  You `user` and `password` are for Twitter, while `tweet_count` and `wrap_chars` control how many tweets are shown at once and the width of the column they are in.  I display tweets on my desktop via [GeekTool](http://projects.tynsoe.org/en/geektool/) so these settings help me keep it in the available space.
+
+If you ever need to reconfigure Jitter, just run it again with the `--settings` flag.
+
+Displaying Tweets
+-----------------
+
+Running Jitter with no arguments after it is configured will display the latest number of tweets matching your `tweet_count`.  This is what I have GeekTool wired to do for me periodically.
+
+Posting a Tweet
+---------------
+
+Posting a tweet from the command-line is equally easy:
+
+    $ bin/jitter 'Tweet body goes here.'
+
+Note that this won't show up in your tweet list, until Jitter is rerun to receive it from Twitter.
+
+Jitter will try to find a matching tweet to reply to if your message begins with `@partial_name`.  The name is matched against screen names in the local database and matching choices will be shown.  If you select one of the possible matches, Jitter will set the reply ID correctly and complete the screen name at the beginning of your message (assuming it was a partial match).
+
+Requirements
+------------
+
+This code requires the following gems:
+
+* amalgalite
+* rest-client
+* json
+
+I've only tested this client on Ruby 1.8.6.  It may not run on other versions.
+
+*WARNINGS*
+----------
+
+There's a ton that could go wrong with using this client.  Just off the top of my head:
+
+* An SQLite 3 database is created to hold tweets in your home directory.  This is never cleaned out and could fill your hard drive if you see heavy Twitter traffic.
+* Your user name and password are not secure in this application.
+* It's super easy for you to miss tweets if you only have Jitter watch for them, since more tweets could come in that you are currently displaying.
+* "Dogs and cats mating in the streets…  Mass hysteria…"
+
+Seriously, this software has zero warranty.  Don't blame me if it eats your computer.
