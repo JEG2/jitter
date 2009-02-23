@@ -111,7 +111,7 @@ if new_tweet = ARGV.shift
     name  = $1
     count = 0
     begin
-      matches = db.read_sql(:all, <<-END_FIND_TWEETS_SQL, "#{name}%", limit)
+      matches = db.read_sql(:all, <<-END_FIND_TWEETS_SQL, "#{name}%", 3)
       SELECT   id, screen_name, body, posted_at
       FROM     tweets
       WHERE    screen_name LIKE ?
