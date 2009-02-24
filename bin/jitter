@@ -106,6 +106,11 @@ server = RestClient::Resource.new( "http://twitter.com/statuses",
                                    :user     => user,
                                    :password => password )
 if new_tweet = ARGV.shift
+  chars = new_tweet.scan(/./mu).length
+  if chars > 140
+    abort "Your tweet, #{chars} characters, is longer than the allowed " +
+          "140 characters."
+  end
   update = {:status => new_tweet.dup, :source => "jitterjeg2"}
   if update[:status] =~ /\A@(\w+)\b/
     name  = $1
