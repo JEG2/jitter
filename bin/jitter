@@ -106,7 +106,7 @@ server = RestClient::Resource.new( "http://twitter.com/statuses",
                                    :user     => user,
                                    :password => password )
 if new_tweet = ARGV.shift
-  update = {:status => new_tweet.dup}
+  update = {:status => new_tweet.dup, :source => "jitterjeg2"}
   if update[:status] =~ /\A@(\w+)\b/
     name  = $1
     count = 0
