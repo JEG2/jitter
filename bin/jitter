@@ -99,7 +99,7 @@ show_tweet = lambda do |tweet, *i|
   by_line = wrap["#{i.first}#{tweet[:screen_name]} at #{tweet[:posted_at]}"]
   puts by_line
   puts "-" * by_line[/\A.+/].length
-  puts wrap[tweet[:body]]
+  puts wrap[tweet[:body].gsub("&gt;", ">").gsub("&lt;", "<")]
 end
 
 server = RestClient::Resource.new( "http://twitter.com/statuses",
